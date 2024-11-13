@@ -1,0 +1,122 @@
+# 此工作流程将构建新的容器镜像并将其推送到阿里云容器镜像仓库（ACR），
+# 然后当有推送到“主”分支时，将其部署到阿里云 Kubernetes 容器服务（ACK）。
+#
+# 要使用此工作流程，您需要完成以下设置步骤：
+#
+# 1. 创建 ACR 存储库来存储容器映像。
+# 您可以使用 ACR EE 实例以获得更高的安全性和更好的性能。
+# 说明请参见 https://www.alibabacloud.com/help/doc-detail/142168.htm
+#
+# 2. 创建一个 ACK​​ 集群来运行您的容器化应用程序。
+# 您可以使用ACK Pro集群来获得更高的安全性和更好的性能。
+# 有关说明，请参阅 https://www.alibabacloud.com/help/doc-detail/95108.htm
+#
+# 3. 将您的 AccessKey 对存储在名为“ACCESS_KEY_ID”和“ACCESS_KEY_SECRET”的 GitHub Actions 密钥中。
+# 有关设置机密的说明，请参阅：https://developer.github.com/actions/managing-workflows/storing-secrets/
+#
+# 4. 更改 REGION_ID、REGISTRY、NAMESPACE、IMAGE、ACK_CLUSTER_ID 和 ACK_DEPLOYMENT_NAME 的值。
+#
+
+name :构建并部署到 ACK
+
+在：
+  推：
+    分支：[  “主要”  ]
+
+# 环境变量可用于此工作流程中的所有作业和步骤。
+环境：
+  区域 ID ：REGION_ID: cn-杭州
+  注册中心：    registry.cn-hangzhou.aliyuncs.com
+  NAMESPACE :   命名空间：命名空间
+  IMAGE :   图片：回购协议
+  标签:   标签：$ { { github.sha } } { { github.sha } }
+  ACK_CLUSTER_ID :    ACK_CLUSTER_ID：集群ID
+  ACK_DEPLOYMENT_NAME :    ACK_DEPLOYMENT_NAME：nginx 配置
+
+  ACR_EE_REGISTRY :    ACR_EE_REGISTRY : myregistry.cn-hangzhou.cr.aliyuncs.com
+  ACR_EE_INSTANCE_ID :    ACR_EE_INSTANCE_ID：实例ID
+  ACR_EE_NAMESPACE ：ACR_EE_NAMESPACE：命名空间
+  ACR_EE_IMAGE :    ACR_EE_IMAGE：存储库
+  ACR_EE_TAG :    ACR_EE_TAG：$ { { github.sha } } { { github.sha } }
+
+权限：
+  内容：   内容： 阅读
+
+职位：
+  建造：
+    running-on :     运行：ubuntu-latest
+    环境:     环境：生产
+
+    步骤：
+    -名称:      - 名称：结账
+      使用：       使用：actions/checkout@v4
+
+    # 1.1 登录ACR# 1.1 登录ACR
+    - name  :       - name：使用AccessKey对登录ACR
+      用途：       使用：aliyun/acr-login@v1
+      和：
+        区域 ID ：“$ {  { env.REGION_ID }  } ”
+        访问密钥 ID ：“$ {  { Secrets.ACCESS_KEY_ID }  } ”
+        访问密钥秘密：“$ {  { Secrets.ACCESS_KEY_SECRET }  } ”
+
+    # 1.2 构建镜像并将其推送到 ACR
+    - name :构建镜像并将其推送到 ACR
+      运行：|
+        docker build --tag "$REGISTRY/$NAMESPACE/$IMAGE:$TAG" 。
+        docker推送“$REGISTRY/$NAMESPACE/$IMAGE:$TAG”
+
+    # 1.3 在ACR中扫描图像
+    -名称： ACR 中扫描图像
+      使用： aliyun/acr-scan@v1
+      和：
+        区域 ID ：“${{ env.REGION_ID }}”
+        访问密钥 ID ：“${{secrets.ACCESS_KEY_ID }}”
+        访问密钥秘密：“${{secrets.ACCESS_KEY_SECRET}}”
+        存储库：“${{ env.NAMESPACE }}/${{ env.IMAGE }}”
+        标签：“${{ env.TAG }}”
+
+    # 2.1（可选）登录ACR EE
+    -使用： actions/checkout@v4
+    - name :使用 AccessKey 对登录 ACR EE
+      使用： aliyun/acr-login@v1
+      和：
+        登录服务器：“https://${{ env.ACR_EE_REGISTRY }}”
+        区域 ID ：“${{ env.REGION_ID }}”
+        访问密钥 ID ：“${{secrets.ACCESS_KEY_ID }}”
+        访问密钥秘密：“${{secrets.ACCESS_KEY_SECRET}}”
+        实例 ID ：“${{ env.ACR_EE_INSTANCE_ID }}”
+
+    # 2.2 (Optional) Build and push image ACR EE
+    - name: Build and push image to ACR EE
+      run: |
+        docker build -t "$ACR_EE_REGISTRY/$ACR_EE_NAMESPACE/$ACR_EE_IMAGE:$TAG" .
+        docker push "$ACR_EE_REGISTRY/$ACR_EE_NAMESPACE/$ACR_EE_IMAGE:$TAG"
+    # 2.3 (Optional) Scan image in ACR EE
+    - name: Scan image in ACR EE
+      uses: aliyun/acr-scan@v1
+      with:
+        region-id: "${{ env.REGION_ID }}"
+        access-key-id: "${{ secrets.ACCESS_KEY_ID }}"
+        access-key-secret: "${{ secrets.ACCESS_KEY_SECRET }}"
+        instance-id: "${{ env.ACR_EE_INSTANCE_ID }}"
+        repository: "${{ env.ACR_EE_NAMESPACE}}/${{ env.ACR_EE_IMAGE }}"
+        tag: "${{ env.ACR_EE_TAG }}"
+
+    # 3.1 Set ACK context
+    - name: Set K8s context
+      uses: aliyun/ack-set-context@v1
+      with:
+        access-key-id: "${{ secrets.ACCESS_KEY_ID }}"
+        access-key-secret: "${{ secrets.ACCESS_KEY_SECRET }}"
+        cluster-id: "${{ env.ACK_CLUSTER_ID }}"
+
+    # 3.2 Deploy the image to the ACK cluster
+    - name: Set up Kustomize
+      run: |-
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh"  | bash /dev/stdin 3.8.6
+    - name: Deploy
+      run: |-
+        ./kustomize edit set image REGISTRY/NAMESPACE/IMAGE:TAG=$REGISTRY/$NAMESPACE/$IMAGE:$TAG
+        ./kustomize build . | kubectl apply -f -
+        kubectl rollout status deployment/$ACK_DEPLOYMENT_NAME
+        kubectl get services -o wide
